@@ -53,3 +53,10 @@ mav.tlog.raw
 mav.parm
 terrain/
 Theano/
+
+examples/gazebo_cartpole
+examples/gazebo_linefollow_ex
+gym_gazebo/envs/gazebo_cartpole
+gym_gazebo/envs/gazebo_linefollow
+gym_gazebo/envs/ros_ws/src/cartpole_gazebo
+gym_gazebo/envs/ros_ws/src/linefollow_ros
