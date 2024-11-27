@@ -11,3 +11,9 @@ register(
     id='GazeboCartPole-v0',
     entry_point='gym_gazebo.envs.gazebo_cartpole:GazeboCartPolev0Env',
 )
+
+# Navigation Network (your environment)
+register(
+    id='NavigationNetwork-v0',
+    entry_point='gym_gazebo.envs.navigation_network.simple_env:SimpleSimEnv',
+)
