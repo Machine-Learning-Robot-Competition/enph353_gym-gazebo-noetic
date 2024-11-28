@@ -41,14 +41,9 @@ class NavigationTrainingEnv(gym.Env):
         rospy.init_node('drone_sim_env', anonymous=True)
         rospy.loginfo("ROS node initialized successfully!")
 
-        # Publisher and subscriber
         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         rospy.Subscriber('/localization_pose', PoseWithCovarianceStamped, self.localization_callback)
         rospy.loginfo("Publisher and subscriber initialized!")
-
-        # Reset service
-        rospy.wait_for_service('/gazebo/reset_simulation')
-        self.reset_sim_service = rospy.ServiceProxy('/gazebo/reset_simulation', Empty)
 
         rospy.wait_for_service('reset_model_service')
         self.reset_model_service = rospy.ServiceProxy('reset_model_service', GoForward)
@@ -56,16 +51,16 @@ class NavigationTrainingEnv(gym.Env):
         # Initialize observation variables
         self.current_pose = None
 
-        # Define the action and observation spaces
+        # Action and observation spaces
         self.action_space = spaces.Discrete(4)  # 8 discrete actions
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)  # [x, y, z]
         
-        self.current_cmd = Twist()  # Initialize a zero velocity command
+        self.current_cmd = Twist() 
         self._stop_event = threading.Event()
         self._publisher_thread = threading.Thread(target=self._publish_cmd_vel)
         self._publisher_thread.start()
     
-    
+
     def _publish_cmd_vel(self):
         """Continuously publish the current velocity command to /cmd_vel."""
         rate = rospy.Rate(10)  # 10 Hz publishing rate
@@ -85,20 +80,6 @@ class NavigationTrainingEnv(gym.Env):
         """Reset the simulation and return the initial observation."""
         rospy.logwarn("RESET CALLED!")
         self.reset_model_service()  # Reset the simulation
-        # try:
-        #     rospy.sleep(0.5)  # Allow time for reset
-        # except rospy.exceptions.ROSTimeMovedBackwardsException:
-        #     rospy.logwarn("Time moved backwards. Retrying sleep...")
-        #     rospy.sleep(0.5)  # Retry sleep after the exception
-
-        # # Wait for the first pose to be received
-        # timeout = rospy.Time.now() + rospy.Duration(5)
-        # while self.current_pose is None and rospy.Time.now() < timeout:
-        #     rospy.sleep(0.1)
-
-        # if self.current_pose is None:
-        #     rospy.logwarn("Failed to receive pose update after reset!")
-        #     return np.zeros(3)  # Return a default observation
 
         msg = ModelState()
         msg.model_name = robot_model_name
@@ -127,13 +108,12 @@ class NavigationTrainingEnv(gym.Env):
         ])
 
         return initial_position
-
-
+    
 
     def step(self, action):
         """Take a step in the environment."""
         # Define discrete actions as [vx, vy, vz, yaw_rate]
-        speed = 15
+        speed = 10
         actions = [
             [speed, 0.0, 0.0, 0.0],   # Move forward
             [-speed, 0.0, 0.0, 0.0],  # Move backward
@@ -145,22 +125,12 @@ class NavigationTrainingEnv(gym.Env):
             # [0.0, 0.0, 0.0, -speed],  # Rotate counterclockwise
         ]
 
-        # Get the selected action
         selected_action = actions[action]
         rospy.loginfo(f"Taking step with action: {selected_action}")
-
-        # Publish the action as a velocity command
-        vel_cmd = Twist()
-        vel_cmd.linear.x = selected_action[0]
-        vel_cmd.linear.y = selected_action[1]
-        vel_cmd.linear.z = selected_action[2]
-        vel_cmd.angular.z = selected_action[3]
-
-        for i in range(3):
-            self.cmd_vel_pub.publish(vel_cmd)
-            rospy.sleep(.2)
-        rospy.sleep(2.2)
-        # Wait for the environment to update
+        self.current_cmd.linear.x = selected_action[0]
+        self.current_cmd.linear.y = selected_action[1]
+        self.current_cmd.linear.z = selected_action[2]
+        self.current_cmd.angular.z = selected_action[3]
         
         # Get the current observation
         obs = self.current_pose if self.current_pose is not None else np.zeros(3)
