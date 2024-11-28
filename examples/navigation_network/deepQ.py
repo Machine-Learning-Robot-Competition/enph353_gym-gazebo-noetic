@@ -203,11 +203,13 @@ class DeepQ:
     def learnOnMiniBatch(self, miniBatchSize, useTargetNetwork=True):
         # Do not learn until we've got self.learnStart samples
         if self.memory.getCurrentSize() > self.learnStart:
-            # learn in batches of 128
             miniBatch = self.memory.getMiniBatch(miniBatchSize)
-            X_batch = np.empty((0,self.input_size), dtype = np.float64)
-            Y_batch = np.empty((0,self.output_size), dtype = np.float64)
-            for sample in miniBatch:
+
+            # Pre-allocate arrays
+            X_batch = np.zeros((miniBatchSize, self.input_size), dtype=np.float64)
+            Y_batch = np.zeros((miniBatchSize, self.output_size), dtype=np.float64)
+
+            for i, sample in enumerate(miniBatch):
                 isFinal = sample['isFinal']
                 state = sample['state']
                 action = sample['action']
@@ -215,20 +217,19 @@ class DeepQ:
                 newState = sample['newState']
 
                 qValues = self.getQValues(state)
-                if useTargetNetwork:
-                    qValuesNewState = self.getTargetQValues(newState)
-                else :
-                    qValuesNewState = self.getQValues(newState)
+                qValuesNewState = (
+                    self.getTargetQValues(newState) if useTargetNetwork else self.getQValues(newState)
+                )
                 targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
 
-                X_batch = np.append(X_batch, np.array([state.copy()]), axis=0)
+                X_batch[i] = state.copy()
                 Y_sample = qValues.copy()
                 Y_sample[action] = targetValue
-                Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
-                if isFinal:
-                    X_batch = np.append(X_batch, np.array([newState.copy()]), axis=0)
-                    Y_batch = np.append(Y_batch, np.array([[reward]*self.output_size]), axis=0)
-            self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), epochs=1, verbose = 0)
+                Y_batch[i] = Y_sample
+
+            # Train the model
+            self.model.fit(X_batch, Y_batch, batch_size=miniBatchSize, epochs=1, verbose=0)
+
 
     def saveModel(self, path):
         self.model.save(path)

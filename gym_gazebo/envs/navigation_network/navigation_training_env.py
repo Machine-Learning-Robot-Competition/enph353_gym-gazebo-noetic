@@ -12,7 +12,12 @@ import toml
 from geometry_msgs.msg import Twist
 from tf.transformations import quaternion_from_euler
 
+import threading
+
 CONFIG_PATH: str = str(pathlib.Path(__file__).absolute().parent.parent.parent.parent.parent / 'robot_controller' / "config" / "robot.toml")
+DATABASE_PATH = "/path/to/saved/database/rtabmap.db"  # Replace with the actual path
+
+
 with open(CONFIG_PATH) as f:
     robot_config = toml.load(f)
 
@@ -22,12 +27,7 @@ initial_conditions: dict = robot_config["initial_conditions"]
 
 class NavigationTrainingEnv(gym.Env):
     def __init__(self):
-        # Initialize the ROS node
-        # rospy.init_node('drone_sim_env', anonymous=True)
-        # rospy.loginfo("ROS node initialized successfully!")
-
-        # Define the goal position
-        self.goal_position = np.array([5.0, 0.0, 5.0])  # Example 3D goal position
+        self.goal_position = np.array([-1.0, 1.0, 0])  # Example 3D goal position
 
         # Launch the simulation
         self.sim_process = subprocess.Popen(
@@ -57,13 +57,29 @@ class NavigationTrainingEnv(gym.Env):
         self.current_pose = None
 
         # Define the action and observation spaces
-        self.action_space = spaces.Discrete(8)  # 8 discrete actions
+        self.action_space = spaces.Discrete(4)  # 8 discrete actions
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)  # [x, y, z]
+        
+        self.current_cmd = Twist()  # Initialize a zero velocity command
+        self._stop_event = threading.Event()
+        self._publisher_thread = threading.Thread(target=self._publish_cmd_vel)
+        self._publisher_thread.start()
+    
+    
+    def _publish_cmd_vel(self):
+        """Continuously publish the current velocity command to /cmd_vel."""
+        rate = rospy.Rate(10)  # 10 Hz publishing rate
+        while not self._stop_event.is_set() and not rospy.is_shutdown():
+            self.cmd_vel_pub.publish(self.current_cmd)
+            rate.sleep()
+
 
     def localization_callback(self, msg):
         """Callback for /localization_pose topic."""
         pose = msg.pose.pose
         self.current_pose = np.array([pose.position.x, pose.position.y, pose.position.z])  # [x, y, z]
+
+    
     
     def reset(self):
         """Reset the simulation and return the initial observation."""
@@ -117,16 +133,16 @@ class NavigationTrainingEnv(gym.Env):
     def step(self, action):
         """Take a step in the environment."""
         # Define discrete actions as [vx, vy, vz, yaw_rate]
-        speed = 5
+        speed = 15
         actions = [
             [speed, 0.0, 0.0, 0.0],   # Move forward
             [-speed, 0.0, 0.0, 0.0],  # Move backward
             [0.0, speed, 0.0, 0.0],   # Move right
             [0.0, -speed, 0.0, 0.0],  # Move left
-            [0.0, 0.0, speed, 0.0],   # Ascend
-            [0.0, 0.0, -speed, 0.0],  # Descend
-            [0.0, 0.0, 0.0, speed],   # Rotate clockwise
-            [0.0, 0.0, 0.0, -speed],  # Rotate counterclockwise
+            # [0.0, 0.0, speed, 0.0],   # Ascend
+            # [0.0, 0.0, -speed, 0.0],  # Descend
+            # [0.0, 0.0, 0.0, speed],   # Rotate clockwise
+            # [0.0, 0.0, 0.0, -speed],  # Rotate counterclockwise
         ]
 
         # Get the selected action
@@ -139,11 +155,13 @@ class NavigationTrainingEnv(gym.Env):
         vel_cmd.linear.y = selected_action[1]
         vel_cmd.linear.z = selected_action[2]
         vel_cmd.angular.z = selected_action[3]
-        self.cmd_vel_pub.publish(vel_cmd)
 
+        for i in range(3):
+            self.cmd_vel_pub.publish(vel_cmd)
+            rospy.sleep(.2)
+        rospy.sleep(2.2)
         # Wait for the environment to update
-        rospy.sleep(0.1)
-
+        
         # Get the current observation
         obs = self.current_pose if self.current_pose is not None else np.zeros(3)
 
@@ -160,14 +178,17 @@ class NavigationTrainingEnv(gym.Env):
             rospy.loginfo("Goal reached!")
 
         # Penalty for going out of bounds
-        elif any(abs(coord) > 10 for coord in obs):
-            reward -= 50  # Penalty for leaving bounds
+        elif distance_to_goal > 10:
+            reward -= 100  # Penalty for leaving bounds
             done = True
             rospy.logwarn("Out of bounds!")
-
         else:
             done = False
 
+        print(f'current pose: {self.current_pose}')
+        print(f'desired pose: {self.goal_position}')
+        print(f'Reward: {reward}')
+        
         return obs, reward, done, {}
 
     def close(self):
