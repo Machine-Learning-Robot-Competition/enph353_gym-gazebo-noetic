@@ -163,8 +163,10 @@ class DeepQ:
         rand = random.random()
         if rand < explorationRate :
             action = np.random.randint(0, self.output_size)
+            print(f'taking random action: Rate {explorationRate}')
         else :
             action = self.getMaxIndex(qValues)
+            print(f'taking best action: {action}')
         return action
 
     def selectActionByProbability(self, qValues, bias):
