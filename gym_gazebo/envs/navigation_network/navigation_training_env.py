@@ -10,7 +10,8 @@ from robot_controller.srv import GoForward
 import pathlib
 import toml
 from geometry_msgs.msg import Twist
-from tf.transformations import quaternion_from_euler
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
+from geometry_msgs.msg import Vector3Stamped, Point, Quaternion
 
 import threading
 
@@ -27,11 +28,11 @@ initial_conditions: dict = robot_config["initial_conditions"]
 
 class NavigationTrainingEnv(gym.Env):
     def __init__(self):
-        self.goal_position = np.array([-1.0, 1.0, 0])  # Example 3D goal position
+        self.goal_position = np.array([2.0, 0.5, 0.0])  # Example 3D goal position
 
         # Launch the simulation
         self.sim_process = subprocess.Popen(
-            ['./run_sim.sh'],  # Adjust if needed
+            ['./run_sim.sh'],
             cwd='/home/fizzer/ros_ws/src/2024_competition/enph353/enph353_utils/scripts',
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
@@ -48,22 +49,41 @@ class NavigationTrainingEnv(gym.Env):
         rospy.wait_for_service('reset_model_service')
         self.reset_model_service = rospy.ServiceProxy('reset_model_service', GoForward)
 
+        # Subscribe to the fix_velocity topic from hector_quadrotor (geometry_msgs/Vector3Stamped)
+        self.velocity_sub = rospy.Subscriber('/fix_velocity', Vector3Stamped, self.velocity_callback)
+
         # Initialize observation variables
         self.current_pose = None
+        self.last_pose = None
 
-        # Action and observation spaces
-        self.action_space = spaces.Discrete(4)  # 8 discrete actions
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)  # [x, y, z]
-        
+
+        # Define the bounds for the observation space
+        low = np.array([-np.inf, -np.inf, -np.inf, 0.0], dtype=np.float32)  # x, y, z: unbounded; theta: 0
+        high = np.array([np.inf, np.inf, np.inf, 2 * np.pi], dtype=np.float32)  # x, y, z: unbounded; theta: 2pi
+
+        # Define the observation space
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        self.action_space = spaces.Discrete(6)
+
         self.current_cmd = Twist() 
         self._stop_event = threading.Event()
         self._publisher_thread = threading.Thread(target=self._publish_cmd_vel)
         self._publisher_thread.start()
+
+        self.velocity_vector = [0, 0, 0]
+        self.distance_vector = [0, 0, 0]
+        self.unmoving_count = 0
     
+    def velocity_callback(self, msg):
+        # Extract linear velocity from Vector3Stamped message
+        vx = msg.vector.x
+        vy = msg.vector.y
+        vz = msg.vector.z  #
+        self.velocity_vector = [vx, vy]
 
     def _publish_cmd_vel(self):
         """Continuously publish the current velocity command to /cmd_vel."""
-        rate = rospy.Rate(10)  # 10 Hz publishing rate
+        rate = rospy.Rate(30)  # 10 Hz publishing rate
         while not self._stop_event.is_set() and not rospy.is_shutdown():
             self.cmd_vel_pub.publish(self.current_cmd)
             rate.sleep()
@@ -71,9 +91,11 @@ class NavigationTrainingEnv(gym.Env):
 
     def localization_callback(self, msg):
         """Callback for /localization_pose topic."""
-        pose = msg.pose.pose
-        self.current_pose = np.array([pose.position.x, pose.position.y, pose.position.z])  # [x, y, z]
 
+        pose = msg.pose.pose
+        orientation = pose.orientation
+        theta = self.get_theta_from_orientation(orientation)
+        self.current_pose = np.array([pose.position.x, pose.position.y, pose.position.z, theta])  # [x, y, z]
     
     
     def reset(self):
@@ -93,6 +115,14 @@ class NavigationTrainingEnv(gym.Env):
         msg.pose.orientation.y = orientation_quaternion[1]
         msg.pose.orientation.z = orientation_quaternion[2]
         msg.pose.orientation.w = orientation_quaternion[3]
+
+        quaternion = (
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z,
+            msg.pose.orientation.w
+        )
+        _, _, yaw = euler_from_quaternion(quaternion)
         msg.twist.linear.x = 0.0
         msg.twist.linear.y = 0.0
         msg.twist.linear.z = 0.0
@@ -104,16 +134,20 @@ class NavigationTrainingEnv(gym.Env):
         initial_position = np.array([
             msg.pose.position.x,
             msg.pose.position.y,
-            msg.pose.position.z
+            msg.pose.position.z,
+            yaw,
         ])
-
+        
+        self.last_pose = initial_position
+        
         return initial_position
     
 
     def step(self, action):
         """Take a step in the environment."""
-        # Define discrete actions as [vx, vy, vz, yaw_rate]
-        speed = 10
+        done = False
+        
+        speed = 1
         actions = [
             [speed, 0.0, 0.0, 0.0],   # Move forward
             [-speed, 0.0, 0.0, 0.0],  # Move backward
@@ -121,8 +155,8 @@ class NavigationTrainingEnv(gym.Env):
             [0.0, -speed, 0.0, 0.0],  # Move left
             # [0.0, 0.0, speed, 0.0],   # Ascend
             # [0.0, 0.0, -speed, 0.0],  # Descend
-            # [0.0, 0.0, 0.0, speed],   # Rotate clockwise
-            # [0.0, 0.0, 0.0, -speed],  # Rotate counterclockwise
+            [0.0, 0.0, 0.0, speed],   # Rotate clockwise
+            [0.0, 0.0, 0.0, -speed],  # Rotate counterclockwise
         ]
 
         selected_action = actions[action]
@@ -131,27 +165,38 @@ class NavigationTrainingEnv(gym.Env):
         self.current_cmd.linear.y = selected_action[1]
         self.current_cmd.linear.z = selected_action[2]
         self.current_cmd.angular.z = selected_action[3]
-        
+
+        rospy.sleep(0.7)
+
         # Get the current observation
         obs = self.current_pose if self.current_pose is not None else np.zeros(3)
 
         # Calculate the Euclidean distance to the goal
-        distance_to_goal = np.linalg.norm(obs - self.goal_position)
+        self.distance_vector = self.goal_position - obs[:3]
+        distance_to_goal = np.linalg.norm(obs[:3] - self.goal_position)
+        distance_traveled = np.linalg.norm(obs[:3] - self.last_pose[:3])
+        
+        if distance_traveled < 0.05:
+            self.unmoving_count += 1
+        else:
+            self.unmoving_count = 0
 
         # Reward function
-        reward = -distance_to_goal  # Penalize distance to the goal
+        reward = self.calculate_reward()
+
+        self.last_pose = obs
 
         # Bonus for reaching the goal
-        if distance_to_goal < 0.5:  # Goal threshold
-            reward += 100  # Bonus reward
-            done = True
-            rospy.loginfo("Goal reached!")
-
-        # Penalty for going out of bounds
-        elif distance_to_goal > 10:
-            reward -= 100  # Penalty for leaving bounds
+        if distance_to_goal < 0.2:
+            reward += 3
+        elif distance_to_goal > 8:  # Penalty for going out of bounds
+            reward -= 10
             done = True
             rospy.logwarn("Out of bounds!")
+        elif self.unmoving_count > 5:
+            reward -= 10
+            rospy.logwarn("STUCK!")
+            done = True
         else:
             done = False
 
@@ -171,3 +216,25 @@ class NavigationTrainingEnv(gym.Env):
                 self.sim_process.kill()
                 rospy.logwarn("Simulation process forcefully terminated.")
         rospy.signal_shutdown("Environment closed.")
+
+    def calculate_reward(self):
+        velocity = self.velocity_vector[:2]
+        distance_vector_norm = self.distance_vector[:2] / np.linalg.norm(self.distance_vector[:2])
+
+        dot_product = np.dot(velocity, distance_vector_norm)
+
+        return dot_product
+    
+    def get_theta_from_orientation(self, orientation):
+        """
+        Extract the yaw angle (theta) from a quaternion.
+
+        Args:
+            orientation: A geometry_msgs/Quaternion message containing x, y, z, w.
+
+        Returns:
+            theta: The yaw angle in radians.
+        """
+        quaternion = (orientation.x, orientation.y, orientation.z, orientation.w)
+        _, _, yaw = euler_from_quaternion(quaternion)
+        return yaw

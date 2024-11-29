@@ -7,8 +7,8 @@ import sys
 
 
 # Hyperparameters
-input_size = 3  # Observation size: [x, y, z]
-output_size = 4  # Number of discrete actions
+input_size = 4  # Observation size: [x, y, z, theta]
+output_size = 6  # Number of discrete actions
 memory_size = 10000
 discount_factor = 0.99
 learning_rate = 0.005
@@ -17,7 +17,7 @@ episodes = 1000
 max_steps = 20
 exploration_rate = 1.0
 # exploration_decay = 0.998
-exploration_decay = 0.98
+exploration_decay = 0.997
 min_exploration_rate = 0.01
 batch_size = 64
 
@@ -25,8 +25,8 @@ batch_size = 64
 # state_space_x = np.linspace(-20, 20, 100)
 # state_space_y = np.linspace(-20, 20, 100)
 reward_list = [] # for tracking reward progress
-state_arr = np.zeros((max_steps, input_size))
-q_value_arr = np.zeros((max_steps, output_size))
+# state_arr = np.zeros((max_steps, input_size))
+# q_value_arr = np.zeros((max_steps, output_size))
 
 # Initialize the environment and DeepQ network
 env = NavigationTrainingEnv()
@@ -39,7 +39,7 @@ try:
     print(f"Model weights successfully loaded from {model_path}")
 except Exception as e:
     print(f"Failed to load model weights from {model_path}. Error: {e}")
-    # sys.exit(1)
+    sys.exit(1)
 
 rospy.sleep(10) # wait for other nodes to launch
 
@@ -73,6 +73,9 @@ for episode in range(episodes):
 
         total_reward += reward
 
+        # Update the exploration rate
+        exploration_rate = max(min_exploration_rate, exploration_rate * exploration_decay)
+
         if done:
             print(f"done!")
             break
@@ -95,15 +98,11 @@ for episode in range(episodes):
     # Example usage
     # visualize_policy_2d(dqn, state_space_x, state_space_y)
 
-    # Update the exploration rate
-    exploration_rate = max(min_exploration_rate, exploration_rate * exploration_decay)
-
     # Update the target network periodically
     if episode % 10 == 0:
         dqn.updateTargetNetwork()
 
     print(f"Episode {episode + 1}: Total Reward = {total_reward}")
-
     print(f'state: {state}')
     print(f'q values: {dqn.getQValues(state)}')
 
