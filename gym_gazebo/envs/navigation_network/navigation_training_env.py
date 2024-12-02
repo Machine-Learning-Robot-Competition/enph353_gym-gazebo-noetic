@@ -18,6 +18,8 @@ import threading
 CONFIG_PATH: str = str(pathlib.Path(__file__).absolute().parent.parent.parent.parent.parent / 'robot_controller' / "config" / "robot.toml")
 DATABASE_PATH = "/path/to/saved/database/rtabmap.db"  # Replace with the actual path
 
+input_size = 5
+output_size = 3
 
 with open(CONFIG_PATH) as f:
     robot_config = toml.load(f)
@@ -28,7 +30,7 @@ initial_conditions: dict = robot_config["initial_conditions"]
 
 class NavigationTrainingEnv(gym.Env):
     def __init__(self):
-        self.goal_position = np.array([2.0, 0.5, 0.0])  # Example 3D goal position
+        self.goal_position = np.array([2.0, 0.5, 0.0, 0.0, 0.0])
 
         # Launch the simulation
         self.sim_process = subprocess.Popen(
@@ -53,17 +55,18 @@ class NavigationTrainingEnv(gym.Env):
         self.velocity_sub = rospy.Subscriber('/fix_velocity', Vector3Stamped, self.velocity_callback)
 
         # Initialize observation variables
+        self.relative_pose = None
         self.current_pose = None
         self.last_pose = None
 
 
         # Define the bounds for the observation space
-        low = np.array([-np.inf, -np.inf, -np.inf, 0.0], dtype=np.float32)  # x, y, z: unbounded; theta: 0
-        high = np.array([np.inf, np.inf, np.inf, 2 * np.pi], dtype=np.float32)  # x, y, z: unbounded; theta: 2pi
+        low = np.array([-np.inf, -np.inf, -np.inf, -1, -1], dtype=np.float32)  # x, y, z: unbounded; theta: 0
+        high = np.array([np.inf, np.inf, np.inf, 1, 1], dtype=np.float32)  # x, y, z: unbounded; theta: 2pi
 
         # Define the observation space
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
-        self.action_space = spaces.Discrete(6)
+        self.action_space = spaces.Discrete(output_size)
 
         self.current_cmd = Twist() 
         self._stop_event = threading.Event()
@@ -83,10 +86,13 @@ class NavigationTrainingEnv(gym.Env):
 
     def _publish_cmd_vel(self):
         """Continuously publish the current velocity command to /cmd_vel."""
-        rate = rospy.Rate(30)  # 10 Hz publishing rate
+        rate = rospy.Rate(45) # publishing rate in Hz
         while not self._stop_event.is_set() and not rospy.is_shutdown():
             self.cmd_vel_pub.publish(self.current_cmd)
             rate.sleep()
+
+    def set_goal(self, coords):
+        self.goal_position = coords
 
 
     def localization_callback(self, msg):
@@ -95,8 +101,8 @@ class NavigationTrainingEnv(gym.Env):
         pose = msg.pose.pose
         orientation = pose.orientation
         theta = self.get_theta_from_orientation(orientation)
-        self.current_pose = np.array([pose.position.x, pose.position.y, pose.position.z, theta])  # [x, y, z]
-    
+        self.current_pose = np.array([pose.position.x, pose.position.y, pose.position.z, -np.cos(theta), -np.sin(theta)])
+        self.relative_pose = self.goal_position - self.current_pose
     
     def reset(self):
         """Reset the simulation and return the initial observation."""
@@ -135,11 +141,13 @@ class NavigationTrainingEnv(gym.Env):
             msg.pose.position.x,
             msg.pose.position.y,
             msg.pose.position.z,
-            yaw,
+            np.cos(yaw),
+            np.sin(yaw),
         ])
         
         self.last_pose = initial_position
-        
+        self.current_pose = initial_position
+        self.relative_pose = self.goal_position - initial_position
         return initial_position
     
 
@@ -147,16 +155,13 @@ class NavigationTrainingEnv(gym.Env):
         """Take a step in the environment."""
         done = False
         
-        speed = 1
+        speed = 1.0
+        yaw_speed  = speed * 1.2
         actions = [
             [speed, 0.0, 0.0, 0.0],   # Move forward
-            [-speed, 0.0, 0.0, 0.0],  # Move backward
-            [0.0, speed, 0.0, 0.0],   # Move right
-            [0.0, -speed, 0.0, 0.0],  # Move left
-            # [0.0, 0.0, speed, 0.0],   # Ascend
-            # [0.0, 0.0, -speed, 0.0],  # Descend
-            [0.0, 0.0, 0.0, speed],   # Rotate clockwise
-            [0.0, 0.0, 0.0, -speed],  # Rotate counterclockwise
+            # [-speed, 0.0, 0.0, 0.0],  # Move backward
+            [0.0, 0.0, 0.0, yaw_speed],   # Rotate clockwise
+            [0.0, 0.0, 0.0, -yaw_speed],  # Rotate counterclockwise
         ]
 
         selected_action = actions[action]
@@ -169,11 +174,11 @@ class NavigationTrainingEnv(gym.Env):
         rospy.sleep(0.7)
 
         # Get the current observation
-        obs = self.current_pose if self.current_pose is not None else np.zeros(3)
+        obs = self.relative_pose if self.relative_pose is not None else np.zeros(5)
 
         # Calculate the Euclidean distance to the goal
-        self.distance_vector = self.goal_position - obs[:3]
-        distance_to_goal = np.linalg.norm(obs[:3] - self.goal_position)
+        self.distance_vector = self.relative_pose[:3]
+        distance_to_goal = np.linalg.norm(self.distance_vector)
         distance_traveled = np.linalg.norm(obs[:3] - self.last_pose[:3])
         
         if distance_traveled < 0.05:
@@ -186,25 +191,26 @@ class NavigationTrainingEnv(gym.Env):
 
         self.last_pose = obs
 
-        # Bonus for reaching the goal
-        if distance_to_goal < 0.2:
-            reward += 3
-        elif distance_to_goal > 8:  # Penalty for going out of bounds
-            reward -= 10
+        if distance_to_goal > 8:  # Penalty for going out of bounds
+            reward -= 1
             done = True
             rospy.logwarn("Out of bounds!")
-        elif self.unmoving_count > 5:
-            reward -= 10
+        elif distance_to_goal < 0.05:
+            rospy.logwarn("__________________GOAL REACHED!__________________")
+            done = True
+        elif self.unmoving_count > 7:
+            reward -= 1
             rospy.logwarn("STUCK!")
             done = True
         else:
             done = False
 
-        print(f'current pose: {self.current_pose}')
-        print(f'desired pose: {self.goal_position}')
-        print(f'Reward: {reward}')
+        # print(f'current pose: {self.current_pose}')
+        # print(f'desired pose: {self.goal_position}')
+        print(f'relative pose: {self.relative_pose}')   
         
-        return obs, reward, done, {}
+        obs_no_z = obs[:2] + obs[3:]
+        return obs_no_z, reward, done, {}
 
     def close(self):
         """Shutdown the simulation."""
@@ -219,11 +225,35 @@ class NavigationTrainingEnv(gym.Env):
 
     def calculate_reward(self):
         velocity = self.velocity_vector[:2]
-        distance_vector_norm = self.distance_vector[:2] / np.linalg.norm(self.distance_vector[:2])
+        velocity_vector_norm = velocity / np.linalg.norm(velocity)
+        distance_vector = self.distance_vector[:2]
+        distance_norm = np.linalg.norm(distance_vector)
 
-        dot_product = np.dot(velocity, distance_vector_norm)
+        if distance_norm < 0.05:
+            return 5.0 # the jackpot!
 
-        return dot_product
+        # Normalize the distance vector
+        distance_vector_norm = distance_vector / distance_norm
+
+        dot_product = np.dot(velocity_vector_norm, distance_vector_norm)
+
+        # Gradient-based reward
+        alignment_reward = dot_product  # Reward alignment with goal direction
+        distance_weight = 1 / (1 + distance_norm)  # Closer gets a higher weight
+        direction_weight = 1
+        if np.abs(dot_product) > 0.8:
+            direction_weight = 1.5
+
+        # Final reward scales with alignment and distance weighting
+        reward = alignment_reward * distance_weight * direction_weight
+
+        reward_norm = np.tanh(reward)
+
+        print(f'_____________PRESCALED || {reward}')
+        print(f'_____________  SCALED  || {reward_norm}')
+        print(f'_____________  WEIGHT  || {distance_weight}')
+
+        return reward_norm
     
     def get_theta_from_orientation(self, orientation):
         """

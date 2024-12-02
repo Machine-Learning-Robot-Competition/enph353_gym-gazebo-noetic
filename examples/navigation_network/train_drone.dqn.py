@@ -4,20 +4,21 @@ from gym_gazebo.envs.navigation_network.navigation_training_env import Navigatio
 import rospy 
 from liveplot import plot_best_actions, plot_rewards_live
 import sys
+import random
 
 
 # Hyperparameters
-input_size = 4  # Observation size: [x, y, z, theta]
-output_size = 6  # Number of discrete actions
+input_size = 4  # Observation size: [x, y, cos(theta). sin(theta)]
+output_size = 3  # Number of discrete actions
 memory_size = 10000
 discount_factor = 0.99
 learning_rate = 0.005
 learn_start = 128
 episodes = 1000
-max_steps = 20
+max_steps = 60
 exploration_rate = 1.0
 # exploration_decay = 0.998
-exploration_decay = 0.997
+exploration_decay = 0.999
 min_exploration_rate = 0.01
 batch_size = 64
 
@@ -31,7 +32,7 @@ reward_list = [] # for tracking reward progress
 # Initialize the environment and DeepQ network
 env = NavigationTrainingEnv()
 dqn = DeepQ(input_size, output_size, memory_size, discount_factor, learning_rate, learn_start)
-dqn.initNetworks(hiddenLayers=[64, 64])  # Two hidden layers with 64 neurons each
+dqn.initNetworks(hiddenLayers=[128, 64, 32, 16])  # Two hidden layers with 64 neurons each
 
 model_path = "dqn_drone_navigation_model.h5"
 try:
@@ -39,7 +40,7 @@ try:
     print(f"Model weights successfully loaded from {model_path}")
 except Exception as e:
     print(f"Failed to load model weights from {model_path}. Error: {e}")
-    sys.exit(1)
+    # sys.exit(1)
 
 rospy.sleep(10) # wait for other nodes to launch
 
@@ -83,6 +84,15 @@ for episode in range(episodes):
     print(f"about to learn")
     dqn.learnOnMiniBatch(batch_size)
     print(f"learned successfully")
+
+
+    robot_start_pose = [4.45, -1.7, 0, 0, 0]
+    # ensures goal isn't within -0.5 and 0.5 in either direction
+    num1 = next(n for n in iter(lambda: random.uniform(-1.5, 1.5), None) if not -0.5 < n < 0.5)
+    num2 = next(n for n in iter(lambda: random.uniform(-1.5, 1.5), None) if not -0.5 < n < 0.5)
+    goal = [num1 + robot_start_pose[0], num2 + robot_start_pose[1], 0, 0, 0]
+    print("new goal:", goal)
+    env.set_goal(goal)
 
 
     if episode % 3:
