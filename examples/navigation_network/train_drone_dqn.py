@@ -15,10 +15,10 @@ discount_factor = 0.99
 learning_rate = 0.005
 learn_start = 128
 episodes = 1000
-max_steps = 60
-exploration_rate = 1.0
+max_steps = 40
+exploration_rate = 0.6 
 # exploration_decay = 0.998
-exploration_decay = 0.999
+exploration_decay = 0.9991
 min_exploration_rate = 0.01
 batch_size = 64
 
@@ -32,7 +32,7 @@ reward_list = [] # for tracking reward progress
 # Initialize the environment and DeepQ network
 env = NavigationTrainingEnv()
 dqn = DeepQ(input_size, output_size, memory_size, discount_factor, learning_rate, learn_start)
-dqn.initNetworks(hiddenLayers=[128, 64, 32, 16])  # Two hidden layers with 64 neurons each
+dqn.initNetworks(hiddenLayers=[64, 64])  # Two hidden layers with 64 neurons each
 
 model_path = "dqn_drone_navigation_model.h5"
 try:
@@ -113,8 +113,6 @@ for episode in range(episodes):
         dqn.updateTargetNetwork()
 
     print(f"Episode {episode + 1}: Total Reward = {total_reward}")
-    print(f'state: {state}')
-    print(f'q values: {dqn.getQValues(state)}')
 
 # Save the trained model
 dqn.saveModel(model_path)

@@ -88,7 +88,7 @@ class NavigationTrainingEnv(gym.Env):
         """Continuously publish the current velocity command to /cmd_vel."""
         rate = rospy.Rate(45) # publishing rate in Hz
         while not self._stop_event.is_set() and not rospy.is_shutdown():
-            self.cmd_vel_pub.publish(self.current_cmd)
+            # self.cmd_vel_pub.publish(self.current_cmd)
             rate.sleep()
 
     def set_goal(self, coords):
@@ -148,7 +148,9 @@ class NavigationTrainingEnv(gym.Env):
         self.last_pose = initial_position
         self.current_pose = initial_position
         self.relative_pose = self.goal_position - initial_position
-        return initial_position
+
+        relative_pose_no_z = [self.relative_pose[0], self.relative_pose[1], self.relative_pose[3], self.relative_pose[4]]
+        return np.array(relative_pose_no_z)
     
 
     def step(self, action):
@@ -191,7 +193,7 @@ class NavigationTrainingEnv(gym.Env):
 
         self.last_pose = obs
 
-        if distance_to_goal > 8:  # Penalty for going out of bounds
+        if distance_to_goal > 5:  # Penalty for going out of bounds
             reward -= 1
             done = True
             rospy.logwarn("Out of bounds!")
@@ -209,7 +211,7 @@ class NavigationTrainingEnv(gym.Env):
         # print(f'desired pose: {self.goal_position}')
         print(f'relative pose: {self.relative_pose}')   
         
-        obs_no_z = obs[:2] + obs[3:]
+        obs_no_z = np.array([obs[0], obs[1], obs[3], obs[4]])
         return obs_no_z, reward, done, {}
 
     def close(self):
@@ -230,7 +232,7 @@ class NavigationTrainingEnv(gym.Env):
         distance_norm = np.linalg.norm(distance_vector)
 
         if distance_norm < 0.05:
-            return 5.0 # the jackpot!
+            return 10.0 # the jackpot!
 
         # Normalize the distance vector
         distance_vector_norm = distance_vector / distance_norm
@@ -251,7 +253,7 @@ class NavigationTrainingEnv(gym.Env):
 
         print(f'_____________PRESCALED || {reward}')
         print(f'_____________  SCALED  || {reward_norm}')
-        print(f'_____________  WEIGHT  || {distance_weight}')
+        print(f'_____________  DISTANCE  || {distance_norm}')
 
         return reward_norm
     
